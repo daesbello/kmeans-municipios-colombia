@@ -7,15 +7,102 @@ selección del número de clusters vía Índice de Dunn.
 """
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.clustering import compare_to_reference, elbow_curve, run_kmeans
+from src.clustering import compare_to_reference, elbow_curve, kmeans_animation, run_kmeans
 from src.data_processing import DEFAULT_FEATURES, FEATURE_LABELS, prepare_dataset
 from src.reference_labels import REFERENCE_SCHEMES, label_idf_dnp, label_mintic_replica
+
+CLUSTER_COLORS = px.colors.qualitative.Set1
+
+
+def _animation_figure(points_2d, frame, municipios):
+    fig = go.Figure()
+    if frame.labels is None:
+        fig.add_trace(
+            go.Scatter(
+                x=points_2d[:, 0],
+                y=points_2d[:, 1],
+                mode="markers",
+                marker=dict(color="lightgray", size=6, opacity=0.6),
+                text=municipios,
+                hoverinfo="text",
+                name="Municipios (sin asignar)",
+            )
+        )
+    else:
+        for c in range(frame.centroids.shape[0]):
+            mask = frame.labels == c
+            fig.add_trace(
+                go.Scatter(
+                    x=points_2d[mask, 0],
+                    y=points_2d[mask, 1],
+                    mode="markers",
+                    marker=dict(size=6, opacity=0.65, color=CLUSTER_COLORS[c % len(CLUSTER_COLORS)]),
+                    text=municipios[mask],
+                    hoverinfo="text",
+                    name=f"Cluster {c}",
+                )
+            )
+    fig.add_trace(
+        go.Scatter(
+            x=frame.centroids_2d[:, 0],
+            y=frame.centroids_2d[:, 1],
+            mode="markers",
+            marker=dict(symbol="star", size=22, color="black", line=dict(width=2, color="white")),
+            name="Centroides",
+            hoverinfo="skip",
+        )
+    )
+    step_titles = {
+        "init": "Paso 0 · Inicialización",
+        "assign": f"Iteración {frame.iteration} · Paso 1: Asignación",
+        "update": f"Iteración {frame.iteration} · Paso 2: Actualización",
+        "converged": f"Convergencia (iteración {frame.iteration})",
+        "max_iter": f"Máximo de iteraciones alcanzado ({frame.iteration})",
+    }
+    fig.update_layout(
+        title=step_titles.get(frame.step_type, frame.step_type),
+        height=520,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    return fig
+
+
+def _animation_explanation(frame, k: int, features: list[str]) -> str:
+    names = ", ".join(FEATURE_LABELS[f] for f in features)
+    if frame.step_type == "init":
+        return (
+            f"**Paso 0 · Inicialización.** El algoritmo elige al azar {k} municipios para usarlos como "
+            f"centroides iniciales (★). Todavía ningún municipio está asignado a un cluster."
+        )
+    if frame.step_type == "assign":
+        return (
+            f"**Iteración {frame.iteration} · Asignación.** Se calcula la distancia euclidiana de cada "
+            f"municipio (en el espacio de {len(features)} variables estandarizadas: {names}) a cada uno "
+            f"de los {k} centroides, y se asigna al más cercano. **{frame.n_changed} municipios** cambiaron "
+            f"de cluster respecto al paso anterior. Inercia actual (suma de distancias² dentro de cada "
+            f"cluster): **{frame.inertia:,.0f}**."
+        )
+    if frame.step_type == "update":
+        return (
+            "**Actualización.** Cada centroide (★) se recalcula como el promedio de los municipios que "
+            "tiene asignados en este momento — por eso se desplaza. En el siguiente paso se vuelve a "
+            "evaluar si, con los centroides ya movidos, algún municipio queda más cerca de uno distinto."
+        )
+    if frame.step_type == "converged":
+        return (
+            f"**✅ Convergencia en la iteración {frame.iteration}.** Ningún municipio cambió de cluster en "
+            f"la última asignación: eso significa que si se recalcularan los centroides de nuevo, no se "
+            f"moverían. El algoritmo se detiene aquí — este es el resultado final de k-means."
+        )
+    return f"Se alcanzó el máximo de iteraciones ({frame.iteration}) sin convergencia completa."
 
 st.set_page_config(page_title="Simulador K-Means · Municipios de Colombia", page_icon="📍", layout="wide")
 
@@ -94,7 +181,9 @@ st.caption(
     f"({meta['n_missing']} con dato faltante, estrategia: {missing_strategy_label.lower()})."
 )
 
-tab_sim, tab_comp, tab_docs = st.tabs(["🎛️ Simulador", "📊 Matriz de confusión y métricas", "📚 Documentación"])
+tab_sim, tab_class, tab_comp, tab_docs = st.tabs(
+    ["🎛️ Simulador", "🎓 Aula interactiva", "📊 Matriz de confusión y métricas", "📚 Documentación"]
+)
 
 # ---------------------------------------------------------------------------
 # TAB 1 — Simulador
@@ -175,7 +264,82 @@ with tab_sim:
     )
 
 # ---------------------------------------------------------------------------
-# TAB 2 — Matriz de confusión
+# TAB 2 — Aula interactiva (k-means paso a paso)
+# ---------------------------------------------------------------------------
+with tab_class:
+    st.markdown("### 🎓 Cómo piensa k-means, paso a paso")
+    st.caption(
+        "Aquí el algoritmo se ejecuta de forma manual (sin usar `KMeans.fit` de una sola vez) guardando "
+        "cada paso intermedio, para poder recorrerlos uno por uno como en una clase en vivo."
+    )
+    st.latex(r"V_{C_k} = \sum_{i=1}^{m} (x_i^k - \mu_k)^2 \qquad \text{(inercia: variación total dentro del cluster } C_k\text{)}")
+    st.caption(
+        "⚠️ Esta animación usa **una sola** inicialización aleatoria de centroides (a diferencia del "
+        "Simulador, que corre 10 inicializaciones y se queda con la mejor). Por eso puede converger a un "
+        "resultado distinto — y a veces peor — que el de la pestaña Simulador: es precisamente el motivo "
+        "por el que k-means en la práctica se corre varias veces. Cambia el `random_state` en Parámetros "
+        "avanzados para comprobarlo con otra semilla."
+    )
+
+    @st.cache_data(show_spinner="Ejecutando k-means paso a paso...")
+    def _kmeans_animation(missing_strategy, features_tuple, scale, k, random_state, max_iter=30):
+        df_, _ = prepare_dataset(missing_strategy, list(features_tuple))
+        return kmeans_animation(df_, list(features_tuple), k, scale, random_state, max_iter)
+
+    points_2d, frames = _kmeans_animation(missing_strategy, tuple(features), scale, k, int(random_state))
+    n_frames = len(frames)
+    municipios = df["Municipio"].to_numpy()
+
+    config_fingerprint = (missing_strategy, tuple(features), scale, k, int(random_state))
+    if st.session_state.get("anim_config") != config_fingerprint:
+        st.session_state.anim_config = config_fingerprint
+        st.session_state.frame_idx = 0
+    st.session_state.frame_idx = min(st.session_state.get("frame_idx", 0), n_frames - 1)
+
+    n_iterations = frames[-1].iteration
+    st.caption(f"Esta ejecución (k={k}) tiene {n_frames} pasos en total, hasta {n_iterations} iteraciones completas.")
+
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
+    if col1.button("⏮ Reiniciar", use_container_width=True):
+        st.session_state.frame_idx = 0
+    if col2.button("◀ Anterior", use_container_width=True):
+        st.session_state.frame_idx = max(0, st.session_state.frame_idx - 1)
+    if col3.button("Siguiente ▶", use_container_width=True):
+        st.session_state.frame_idx = min(n_frames - 1, st.session_state.frame_idx + 1)
+    play = col4.button("▶️ Reproducir animación completa", use_container_width=True)
+
+    new_idx = st.slider("Arrastra para explorar cualquier paso", 0, n_frames - 1, st.session_state.frame_idx)
+    if new_idx != st.session_state.frame_idx:
+        st.session_state.frame_idx = new_idx
+
+    chart_ph = st.empty()
+    text_ph = st.empty()
+    inertia_ph = st.empty()
+
+    def _render(i):
+        frame = frames[i]
+        chart_ph.plotly_chart(_animation_figure(points_2d, frame, municipios), use_container_width=True, key=f"anim_{i}")
+        text_ph.info(_animation_explanation(frame, k, features))
+        steps_so_far = [(j, frames[j].inertia) for j in range(1, i + 1) if frames[j].inertia is not None]
+        if steps_so_far:
+            hist_df = pd.DataFrame(steps_so_far, columns=["paso", "inercia"])
+            fig_hist = px.line(hist_df, x="paso", y="inercia", markers=True, title="Inercia a lo largo de los pasos")
+            fig_hist.update_layout(height=250)
+            inertia_ph.plotly_chart(fig_hist, use_container_width=True, key=f"anim_hist_{i}")
+        else:
+            inertia_ph.empty()
+
+    if play:
+        for i in range(st.session_state.frame_idx, n_frames):
+            st.session_state.frame_idx = i
+            _render(i)
+            time.sleep(0.6)
+        st.rerun()
+    else:
+        _render(st.session_state.frame_idx)
+
+# ---------------------------------------------------------------------------
+# TAB 3 — Matriz de confusión
 # ---------------------------------------------------------------------------
 with tab_comp:
     if ref_labels is None:
@@ -218,7 +382,7 @@ with tab_comp:
         st.dataframe(comp.per_class.style.format(precision=3), use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
-# TAB 3 — Documentación
+# TAB 4 — Documentación
 # ---------------------------------------------------------------------------
 with tab_docs:
     st.markdown(
@@ -243,6 +407,15 @@ municipios según sus características socioeconómicas.
 El estudio original de MinTIC usa una sexta variable (porcentaje de hogares
 con acceso a internet) que no está disponible en este dataset, por lo que el
 simulador agrupa con las cinco variables anteriores.
+
+### La pestaña "Aula interactiva"
+Mientras que la pestaña Simulador muestra el resultado final del clustering,
+la pestaña **🎓 Aula interactiva** ejecuta el algoritmo paso a paso y deja
+recorrer cada iteración con controles de reproducir/pausar/avanzar o
+arrastrando una barra: inicialización de centroides, asignación de cada
+municipio al centroide más cercano, recálculo de centroides, y así hasta la
+convergencia — con una explicación de qué está pasando técnicamente en cada
+paso, y una curva en vivo de cómo baja la inercia.
 
 ### ¿Cómo funciona k-means?
 1. Se elige un número de clusters **k**.
