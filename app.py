@@ -201,6 +201,11 @@ with tab_intro:
         "Antes de meterse con los 1.101 municipios (5 variables), veamos exactamente qué hace k-means "
         "con 24 puntos en 2 dimensiones — el mismo código, a menor escala, para que se vea claro."
     )
+    st.caption(
+        f"🔗 Usa el mismo **k = {k}** y **random_state = {int(random_state)}** que elegiste en "
+        "'⚙️ Controles del simulador' — cámbialos ahí y este ejemplo se recalcula también. "
+        "(Los 24 puntos en sí se mantienen fijos, solo cambia cómo k-means los agrupa.)"
+    )
 
     st.markdown("**1. Los datos: 24 puntos en 2D, agrupados en 3 nubes**")
     code_col, plot_col = st.columns([1, 1])
@@ -251,9 +256,16 @@ with tab_intro:
         fig.update_layout(height=320, margin=dict(t=10, b=10), showlegend=False)
         return fig
 
-    toy_frames = kmeans_steps_from_matrix(toy_X, k=3, random_state=7, max_iter=20)
+    toy_k = min(k, len(toy_X))  # k no puede superar el número de puntos disponibles
+    toy_frames = kmeans_steps_from_matrix(toy_X, k=toy_k, random_state=int(random_state), max_iter=20)
     plot_col.plotly_chart(_toy_figure(), use_container_width=True, key="toy_initial")
+    if toy_k != k:
+        st.caption(f"⚠️ k={k} es mayor que el número de puntos disponibles; se usa k={toy_k} en este ejemplo.")
 
+    toy_config = (toy_k, int(random_state))
+    if st.session_state.get("toy_config") != toy_config:
+        st.session_state.toy_config = toy_config
+        st.session_state.toy_step = 0
     if "toy_step" not in st.session_state:
         st.session_state.toy_step = 0
     st.session_state.toy_step = min(st.session_state.toy_step, len(toy_frames) - 1)
@@ -269,10 +281,10 @@ with tab_intro:
 
     TOY_CODE = {
         "init": (
-            "**Paso 1 · Inicialización** — se eligen k=3 puntos al azar como centroides:",
-            "rng = np.random.RandomState(7)\n"
-            "idx = rng.choice(len(X), size=3, replace=False)\n"
-            "centroides = X[idx]   # 3 puntos cualquiera, para arrancar",
+            f"**Paso 1 · Inicialización** — se eligen k={toy_k} puntos al azar como centroides:",
+            f"rng = np.random.RandomState({int(random_state)})\n"
+            f"idx = rng.choice(len(X), size={toy_k}, replace=False)\n"
+            f"centroides = X[idx]   # {toy_k} puntos cualquiera, para arrancar",
         ),
         "assign": (
             "**Paso 2 · Asignación** — cada punto se une al centroide más cercano:",
@@ -282,7 +294,7 @@ with tab_intro:
         ),
         "update": (
             "**Paso 3 · Actualización** — cada centroide se mueve al promedio de su grupo:",
-            "for c in range(3):\n"
+            f"for c in range({toy_k}):\n"
             "    centroides[c] = X[etiquetas == c].mean(axis=0)  # promedio del grupo c",
         ),
         "converged": (
@@ -292,7 +304,7 @@ with tab_intro:
         ),
         "max_iter": (
             "Se alcanzó el máximo de iteraciones sin estabilizarse del todo.",
-            "# (con datos tan separados esto casi nunca pasa)",
+            "# (con k tan alto para tan pocos puntos, a veces no se estabiliza limpio)",
         ),
     }
     label, code = TOY_CODE[toy_frame.step_type]
@@ -304,7 +316,7 @@ with tab_intro:
     if toy_frame.step_type == "assign":
         ccol.caption(f"{toy_frame.n_changed} puntos cambiaron de grupo en este paso.")
     elif toy_frame.step_type == "converged":
-        ccol.success(f"Convergió en la iteración {toy_frame.iteration}: k-means encontró 3 grupos estables.")
+        ccol.success(f"Convergió en la iteración {toy_frame.iteration}: k-means encontró {toy_k} grupos estables.")
 
     st.info(
         "👉 Esto es exactamente lo mismo que hace la pestaña **Simulador interactivo**, solo que con "
