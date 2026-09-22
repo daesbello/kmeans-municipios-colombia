@@ -19,8 +19,9 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from sklearn.datasets import make_blobs
 
-from src.clustering import compare_to_reference, elbow_curve, frame_metrics, kmeans_animation
+from src.clustering import compare_to_reference, elbow_curve, frame_metrics, kmeans_animation, kmeans_steps_from_matrix
 from src.data_processing import DEFAULT_FEATURES, FEATURE_LABELS, prepare_dataset
 from src.reference_labels import REFERENCE_SCHEMES, label_idf_dnp, label_mintic_replica
 
@@ -187,7 +188,129 @@ st.caption(
     f"({meta['n_missing']} con dato faltante, estrategia: {missing_strategy_label.lower()})."
 )
 
-tab_sim, tab_docs = st.tabs(["🎓 Simulador interactivo", "📚 Documentación"])
+tab_intro, tab_sim, tab_docs = st.tabs(
+    ["🧩 Cómo funciona (ejemplo sencillo)", "🎓 Simulador interactivo", "📚 Documentación"]
+)
+
+# ---------------------------------------------------------------------------
+# TAB 0 — Cómo funciona k-means: ejemplo sencillo en código + gráfica
+# ---------------------------------------------------------------------------
+with tab_intro:
+    st.markdown("### 🧩 K-means en 4 pasos, con un ejemplo mínimo")
+    st.caption(
+        "Antes de meterse con los 1.101 municipios (5 variables), veamos exactamente qué hace k-means "
+        "con 24 puntos en 2 dimensiones — el mismo código, a menor escala, para que se vea claro."
+    )
+
+    st.markdown("**1. Los datos: 24 puntos en 2D, agrupados en 3 nubes**")
+    code_col, plot_col = st.columns([1, 1])
+    code_col.code(
+        "from sklearn.datasets import make_blobs\n\n"
+        "X, _ = make_blobs(\n"
+        "    n_samples=24, centers=3,\n"
+        "    cluster_std=0.60, random_state=7,\n"
+        ")",
+        language="python",
+    )
+
+    @st.cache_data(show_spinner=False)
+    def _toy_data():
+        X, _ = make_blobs(n_samples=24, centers=3, cluster_std=0.60, random_state=7)
+        return X
+
+    toy_X = _toy_data()
+
+    def _toy_figure(frame=None):
+        """frame=None dibuja solo los puntos crudos, sin centroides (para la vista previa de los datos)."""
+        fig = go.Figure()
+        if frame is None or frame.labels is None:
+            fig.add_trace(
+                go.Scatter(
+                    x=toy_X[:, 0], y=toy_X[:, 1], mode="markers",
+                    marker=dict(color="lightgray", size=12), name="Puntos",
+                )
+            )
+        else:
+            for c in range(frame.centroids.shape[0]):
+                mask = frame.labels == c
+                fig.add_trace(
+                    go.Scatter(
+                        x=toy_X[mask, 0], y=toy_X[mask, 1], mode="markers",
+                        marker=dict(size=12, color=CLUSTER_COLORS[c % len(CLUSTER_COLORS)]),
+                        name=f"Cluster {c}",
+                    )
+                )
+        if frame is not None:
+            fig.add_trace(
+                go.Scatter(
+                    x=frame.centroids_2d[:, 0], y=frame.centroids_2d[:, 1], mode="markers",
+                    marker=dict(symbol="star", size=26, color="black", line=dict(width=2, color="white")),
+                    name="Centroides",
+                )
+            )
+        fig.update_layout(height=320, margin=dict(t=10, b=10), showlegend=False)
+        return fig
+
+    toy_frames = kmeans_steps_from_matrix(toy_X, k=3, random_state=7, max_iter=20)
+    plot_col.plotly_chart(_toy_figure(), use_container_width=True, key="toy_initial")
+
+    if "toy_step" not in st.session_state:
+        st.session_state.toy_step = 0
+    st.session_state.toy_step = min(st.session_state.toy_step, len(toy_frames) - 1)
+
+    tcol1, tcol2, tcol3 = st.columns([1, 1, 3])
+    if tcol1.button("⏮ Reiniciar", key="toy_reset", use_container_width=True):
+        st.session_state.toy_step = 0
+    if tcol2.button("Siguiente paso ▶", key="toy_next", use_container_width=True):
+        st.session_state.toy_step = min(len(toy_frames) - 1, st.session_state.toy_step + 1)
+    tcol3.caption(f"Paso {st.session_state.toy_step} de {len(toy_frames) - 1}")
+
+    toy_frame = toy_frames[st.session_state.toy_step]
+
+    TOY_CODE = {
+        "init": (
+            "**Paso 1 · Inicialización** — se eligen k=3 puntos al azar como centroides:",
+            "rng = np.random.RandomState(7)\n"
+            "idx = rng.choice(len(X), size=3, replace=False)\n"
+            "centroides = X[idx]   # 3 puntos cualquiera, para arrancar",
+        ),
+        "assign": (
+            "**Paso 2 · Asignación** — cada punto se une al centroide más cercano:",
+            "from scipy.spatial.distance import cdist\n\n"
+            "distancias = cdist(X, centroides)      # distancia de cada punto a cada centroide\n"
+            "etiquetas = distancias.argmin(axis=1)  # el centroide más cercano gana",
+        ),
+        "update": (
+            "**Paso 3 · Actualización** — cada centroide se mueve al promedio de su grupo:",
+            "for c in range(3):\n"
+            "    centroides[c] = X[etiquetas == c].mean(axis=0)  # promedio del grupo c",
+        ),
+        "converged": (
+            "**Paso 4 · Convergencia** — si nadie cambió de grupo, se detiene:",
+            "if (etiquetas == etiquetas_anteriores).all():\n"
+            "    break   # ya nadie cambió de cluster -> resultado final",
+        ),
+        "max_iter": (
+            "Se alcanzó el máximo de iteraciones sin estabilizarse del todo.",
+            "# (con datos tan separados esto casi nunca pasa)",
+        ),
+    }
+    label, code = TOY_CODE[toy_frame.step_type]
+
+    gcol, ccol = st.columns([1, 1])
+    gcol.plotly_chart(_toy_figure(toy_frame), use_container_width=True, key=f"toy_{st.session_state.toy_step}")
+    ccol.markdown(label)
+    ccol.code(code, language="python")
+    if toy_frame.step_type == "assign":
+        ccol.caption(f"{toy_frame.n_changed} puntos cambiaron de grupo en este paso.")
+    elif toy_frame.step_type == "converged":
+        ccol.success(f"Convergió en la iteración {toy_frame.iteration}: k-means encontró 3 grupos estables.")
+
+    st.info(
+        "👉 Esto es exactamente lo mismo que hace la pestaña **Simulador interactivo**, solo que con "
+        "1.101 municipios y 5 variables en vez de 24 puntos y 2 — el código es el mismo, solo cambian "
+        "los datos y el número de dimensiones."
+    )
 
 # ---------------------------------------------------------------------------
 # TAB 1 — Simulador interactivo (todo integrado y en vivo)

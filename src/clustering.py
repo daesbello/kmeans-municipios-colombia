@@ -113,6 +113,61 @@ class StepFrame:
     n_changed: int | None
 
 
+def kmeans_steps_from_matrix(
+    X: np.ndarray,
+    k: int,
+    random_state: int = 42,
+    max_iter: int = 30,
+    project=None,
+) -> list[StepFrame]:
+    """Núcleo del algoritmo k-medias ejecutado manualmente paso a paso sobre
+    una matriz X cualquiera, guardando cada fotograma (inicialización,
+    asignación, actualización) para poder reproducirlos uno a uno en la UI.
+
+    `project`, si se da, es una función (p. ej. `pca.transform`) usada para
+    llevar los centroides a 2D para graficarlos; si `X` ya es 2D se puede
+    omitir y los centroides se usan tal cual.
+    """
+    to_2d = project if project is not None else (lambda c: c)
+
+    rng = np.random.RandomState(random_state)
+    init_idx = rng.choice(len(X), size=k, replace=False)
+    centroids = X[init_idx].copy()
+
+    frames = [StepFrame("init", 0, None, centroids.copy(), to_2d(centroids), None, None)]
+
+    prev_labels = None
+    inertia = None
+    n_changed = None
+    for it in range(1, max_iter + 1):
+        d = cdist(X, centroids)
+        labels = d.argmin(axis=1)
+        inertia = float((d[np.arange(len(X)), labels] ** 2).sum())
+        n_changed = len(X) if prev_labels is None else int((labels != prev_labels).sum())
+        frames.append(StepFrame("assign", it, labels.copy(), centroids.copy(), to_2d(centroids), inertia, n_changed))
+
+        if prev_labels is not None and n_changed == 0:
+            frames.append(StepFrame("converged", it, labels.copy(), centroids.copy(), to_2d(centroids), inertia, 0))
+            break
+
+        new_centroids = centroids.copy()
+        for c in range(k):
+            pts = X[labels == c]
+            if len(pts) > 0:
+                new_centroids[c] = pts.mean(axis=0)
+        frames.append(
+            StepFrame("update", it, labels.copy(), new_centroids.copy(), to_2d(new_centroids), inertia, n_changed)
+        )
+        centroids = new_centroids
+        prev_labels = labels
+    else:
+        frames.append(
+            StepFrame("max_iter", max_iter, prev_labels.copy(), centroids.copy(), to_2d(centroids), inertia, n_changed)
+        )
+
+    return frames
+
+
 def kmeans_animation(
     df: pd.DataFrame,
     features: list[str],
@@ -121,8 +176,7 @@ def kmeans_animation(
     random_state: int = 42,
     max_iter: int = 30,
 ) -> tuple[np.ndarray, np.ndarray, list[StepFrame]]:
-    """Ejecuta k-medias manualmente, guardando cada paso (inicialización,
-    asignación, actualización) para poder reproducirlos uno a uno en la UI.
+    """Ejecuta k-medias manualmente sobre las variables de un dataframe.
 
     Devuelve la matriz de datos usada para agrupar (X, ya estandarizada si
     corresponde — útil para calcular métricas de calidad en cualquier paso),
@@ -137,43 +191,7 @@ def kmeans_animation(
     pca = PCA(n_components=n_components, random_state=random_state)
     points_2d = pca.fit_transform(X)
 
-    rng = np.random.RandomState(random_state)
-    init_idx = rng.choice(len(X), size=k, replace=False)
-    centroids = X[init_idx].copy()
-
-    frames = [StepFrame("init", 0, None, centroids.copy(), pca.transform(centroids), None, None)]
-
-    prev_labels = None
-    inertia = None
-    n_changed = None
-    for it in range(1, max_iter + 1):
-        d = cdist(X, centroids)
-        labels = d.argmin(axis=1)
-        inertia = float((d[np.arange(len(X)), labels] ** 2).sum())
-        n_changed = len(X) if prev_labels is None else int((labels != prev_labels).sum())
-        frames.append(StepFrame("assign", it, labels.copy(), centroids.copy(), pca.transform(centroids), inertia, n_changed))
-
-        if prev_labels is not None and n_changed == 0:
-            frames.append(
-                StepFrame("converged", it, labels.copy(), centroids.copy(), pca.transform(centroids), inertia, 0)
-            )
-            break
-
-        new_centroids = centroids.copy()
-        for c in range(k):
-            pts = X[labels == c]
-            if len(pts) > 0:
-                new_centroids[c] = pts.mean(axis=0)
-        frames.append(
-            StepFrame("update", it, labels.copy(), new_centroids.copy(), pca.transform(new_centroids), inertia, n_changed)
-        )
-        centroids = new_centroids
-        prev_labels = labels
-    else:
-        frames.append(
-            StepFrame("max_iter", max_iter, prev_labels.copy(), centroids.copy(), pca.transform(centroids), inertia, n_changed)
-        )
-
+    frames = kmeans_steps_from_matrix(X, k, random_state, max_iter, project=pca.transform)
     return X, points_2d, frames
 
 
