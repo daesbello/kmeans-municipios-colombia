@@ -25,9 +25,15 @@ la explicación completa de la metodología y las métricas.
 ## Autor
 David Bello
 
-## Informe
-Ver [INFORME.md](INFORME.md): metodología, resultados, matriz de confusión y
-conclusiones completas del trabajo.
+## Aplicación en producción
+🔗 **[kmeans-municipios-colombia.streamlit.app](https://kmeans-municipios-colombia.streamlit.app/)**
+(desplegada en Streamlit Community Cloud, se actualiza sola con cada `git push` a `main`)
+
+## Documentación del proyecto
+- [ARQUITECTURA.md](ARQUITECTURA.md): arquitectura de la app, dependencias,
+  despliegue y el historial de prompts usados para construirla con IA.
+- [INFORME.md](INFORME.md): metodología, resultados, matriz de confusión y
+  conclusiones completas del trabajo.
 
 ## Estructura
 ```
@@ -39,6 +45,8 @@ kmeans_app/
 │   └── reference_labels.py # Esquemas de etiquetas de referencia
 ├── data/                   # Copia del dataset consolidado
 ├── requirements.txt
+├── ARQUITECTURA.md         # Arquitectura, dependencias, despliegue, prompts
+├── INFORME.md              # Metodología y resultados
 └── .streamlit/config.toml  # Tema
 ```
 
@@ -51,34 +59,24 @@ streamlit run app.py
 ```
 Abre http://localhost:8501
 
-## Despliegue gratuito en Hugging Face Spaces
+## Despliegue
+
+**Plataforma usada: Streamlit Community Cloud** (gratuita). El repo de
+GitHub está conectado directamente a [share.streamlit.io](https://share.streamlit.io);
+cada `git push` a `main` redespliega la app automáticamente. Para conectar
+un repo nuevo ahí: "New app" → seleccionar el repo, la rama `main` y
+`app.py` como archivo principal.
+
+<details>
+<summary>Nota: por qué no Hugging Face Spaces</summary>
+
 El bloque YAML al inicio de este README es la configuración que Hugging Face
-Spaces necesita para saber cómo ejecutar la app (SDK, versión, archivo
-principal). Pasos:
-
-1. Crea una cuenta gratuita en [huggingface.co](https://huggingface.co) si no
-   tienes una.
-2. Ve a **New Space** → elige un nombre, SDK **Streamlit**, visibilidad
-   pública, y créalo. Esto genera un repositorio git propio de Hugging Face
-   (distinto del de GitHub).
-3. Conecta ese Space con el repo de GitHub (`kmeans-municipios-colombia`) de
-   una de estas formas:
-   - **Más simple**: en la página del Space, usa la opción de subir archivos
-     y arrastra el contenido de esta carpeta (o usa "Import from GitHub" si
-     tu cuenta la tiene habilitada).
-   - **Vía git**, desde esta carpeta local:
-     ```bash
-     git remote add space https://huggingface.co/spaces/<tu-usuario-hf>/<nombre-space>
-     git push space main
-     ```
-     (te pedirá tu usuario y un *access token* de Hugging Face, que generas en
-     Settings → Access Tokens de tu cuenta).
-4. El Space se construye solo y queda disponible en
-   `https://huggingface.co/spaces/<tu-usuario-hf>/<nombre-space>`.
-
-Si en algún momento prefieres Streamlit Community Cloud en su lugar, el
-proceso es igual de simple: en [share.streamlit.io](https://share.streamlit.io)
-conectas el repo de GitHub y seleccionas `app.py` como archivo principal.
+Spaces necesita (SDK, versión, archivo principal) por si se quiere usar en
+el futuro. No se usó como plataforma final porque, al construir esta app,
+Hugging Face Spaces exigía una suscripción paga para correr Spaces con SDK
+Streamlit/Gradio/Docker (solo el SDK "Static", sin backend Python, es
+gratuito) — ver el detalle en [ARQUITECTURA.md](ARQUITECTURA.md#6-despliegue).
+</details>
 
 Ver la pestaña **Documentación** dentro de la app para el detalle completo
 de la metodología, las variables y cómo interpretar cada métrica.
