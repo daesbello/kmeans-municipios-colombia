@@ -25,6 +25,10 @@ la explicación completa de la metodología y las métricas.
 ## Autor
 David Bello
 
+## Informe
+Ver [INFORME.md](INFORME.md): metodología, resultados, matriz de confusión y
+conclusiones completas del trabajo.
+
 ## Estructura
 ```
 kmeans_app/
