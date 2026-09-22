@@ -20,20 +20,6 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 
 
-@dataclass
-class ClusteringResult:
-    labels: np.ndarray
-    centroids_scaled: np.ndarray
-    centroids_original: np.ndarray
-    inertia: float
-    silhouette: float | None
-    calinski_harabasz: float | None
-    davies_bouldin: float | None
-    dunn_index: float | None
-    pca_coords: np.ndarray
-    pca_explained_variance: np.ndarray
-
-
 def dunn_index(X: np.ndarray, labels: np.ndarray) -> float | None:
     """Índice de Dunn: min distancia intercluster / max distancia intracluster.
 
@@ -64,50 +50,33 @@ def dunn_index(X: np.ndarray, labels: np.ndarray) -> float | None:
     return float(min_inter / max_intra)
 
 
-def run_kmeans(
-    df: pd.DataFrame,
-    features: list[str],
-    k: int,
-    scale: bool,
-    random_state: int,
-    n_init: int,
-) -> ClusteringResult:
-    X_raw = df[features].to_numpy(dtype=float)
+def frame_metrics(X: np.ndarray, labels: np.ndarray | None) -> dict:
+    """Métricas de calidad para una asignación de clusters concreta (p. ej. un
+    paso intermedio de la animación, donde algún cluster puede haber quedado
+    vacío o con un solo municipio — casos que estas métricas no soportan).
+    """
+    metrics = {"silhouette": None, "calinski_harabasz": None, "davies_bouldin": None, "dunn_index": None}
+    if labels is None:
+        return metrics
 
-    if scale:
-        scaler = StandardScaler()
-        X = scaler.fit_transform(X_raw)
-    else:
-        scaler = None
-        X = X_raw
+    n_unique = len(np.unique(labels))
+    if n_unique < 2 or n_unique >= len(X):
+        return metrics
 
-    model = KMeans(n_clusters=k, random_state=random_state, n_init=n_init)
-    labels = model.fit_predict(X)
-
-    centroids_scaled = model.cluster_centers_
-    centroids_original = scaler.inverse_transform(centroids_scaled) if scaler else centroids_scaled
-
-    n_components = min(2, X.shape[1])
-    pca = PCA(n_components=n_components, random_state=random_state)
-    coords = pca.fit_transform(X)
-
-    sil = silhouette_score(X, labels) if k > 1 and k < len(X) else None
-    ch = calinski_harabasz_score(X, labels) if k > 1 else None
-    db = davies_bouldin_score(X, labels) if k > 1 else None
-    dunn = dunn_index(X, labels) if k > 1 else None
-
-    return ClusteringResult(
-        labels=labels,
-        centroids_scaled=centroids_scaled,
-        centroids_original=centroids_original,
-        inertia=float(model.inertia_),
-        silhouette=sil,
-        calinski_harabasz=ch,
-        davies_bouldin=db,
-        dunn_index=dunn,
-        pca_coords=coords,
-        pca_explained_variance=pca.explained_variance_ratio_,
-    )
+    try:
+        metrics["silhouette"] = float(silhouette_score(X, labels))
+    except ValueError:
+        pass
+    try:
+        metrics["calinski_harabasz"] = float(calinski_harabasz_score(X, labels))
+    except ValueError:
+        pass
+    try:
+        metrics["davies_bouldin"] = float(davies_bouldin_score(X, labels))
+    except ValueError:
+        pass
+    metrics["dunn_index"] = dunn_index(X, labels)
+    return metrics
 
 
 def elbow_curve(
@@ -151,13 +120,15 @@ def kmeans_animation(
     scale: bool,
     random_state: int = 42,
     max_iter: int = 30,
-) -> tuple[np.ndarray, list[StepFrame]]:
+) -> tuple[np.ndarray, np.ndarray, list[StepFrame]]:
     """Ejecuta k-medias manualmente, guardando cada paso (inicialización,
     asignación, actualización) para poder reproducirlos uno a uno en la UI.
 
-    Devuelve la proyección PCA 2D de los puntos (fija) y la lista de
-    fotogramas; cada fotograma trae los centroides ya proyectados a 2D con
-    el mismo PCA, para poder dibujarlos sobre los mismos ejes.
+    Devuelve la matriz de datos usada para agrupar (X, ya estandarizada si
+    corresponde — útil para calcular métricas de calidad en cualquier paso),
+    la proyección PCA 2D de los puntos (fija), y la lista de fotogramas; cada
+    fotograma trae los centroides ya proyectados a 2D con el mismo PCA, para
+    poder dibujarlos sobre los mismos ejes.
     """
     X_raw = df[features].to_numpy(dtype=float)
     X = StandardScaler().fit_transform(X_raw) if scale else X_raw
@@ -203,7 +174,7 @@ def kmeans_animation(
             StepFrame("max_iter", max_iter, prev_labels.copy(), centroids.copy(), pca.transform(centroids), inertia, n_changed)
         )
 
-    return points_2d, frames
+    return X, points_2d, frames
 
 
 def align_clusters_to_labels(cluster_labels: np.ndarray, ref_labels: pd.Series) -> dict[int, str]:

@@ -4,6 +4,11 @@ Réplica interactiva de la metodología de agrupación de municipios descrita en
 "Plazos para la implementación del Marco de Referencia de Arquitectura
 Empresarial" (MinTIC, 2023): k-medias sobre variables socioeconómicas, con
 selección del número de clusters vía Índice de Dunn.
+
+El algoritmo se ejecuta paso a paso (inicialización, asignación,
+actualización) y toda la vista — gráfica, métricas, matriz de confusión,
+perfil de clusters — se recalcula para el paso actual, para poder ver en
+vivo cómo evoluciona la simulación.
 """
 from __future__ import annotations
 
@@ -15,11 +20,19 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.clustering import compare_to_reference, elbow_curve, kmeans_animation, run_kmeans
+from src.clustering import compare_to_reference, elbow_curve, frame_metrics, kmeans_animation
 from src.data_processing import DEFAULT_FEATURES, FEATURE_LABELS, prepare_dataset
 from src.reference_labels import REFERENCE_SCHEMES, label_idf_dnp, label_mintic_replica
 
 CLUSTER_COLORS = px.colors.qualitative.Set1
+
+STEP_TITLES = {
+    "init": "Paso 0 · Inicialización",
+    "assign": "Iteración {it} · Paso 1: Asignación",
+    "update": "Iteración {it} · Paso 2: Actualización",
+    "converged": "✅ Convergencia (iteración {it})",
+    "max_iter": "⏹ Máximo de iteraciones alcanzado ({it})",
+}
 
 
 def _animation_figure(points_2d, frame, municipios):
@@ -60,17 +73,11 @@ def _animation_figure(points_2d, frame, municipios):
             hoverinfo="skip",
         )
     )
-    step_titles = {
-        "init": "Paso 0 · Inicialización",
-        "assign": f"Iteración {frame.iteration} · Paso 1: Asignación",
-        "update": f"Iteración {frame.iteration} · Paso 2: Actualización",
-        "converged": f"Convergencia (iteración {frame.iteration})",
-        "max_iter": f"Máximo de iteraciones alcanzado ({frame.iteration})",
-    }
     fig.update_layout(
-        title=step_titles.get(frame.step_type, frame.step_type),
-        height=520,
+        title=STEP_TITLES.get(frame.step_type, frame.step_type).format(it=frame.iteration),
+        height=480,
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        margin=dict(t=60),
     )
     return fig
 
@@ -103,6 +110,7 @@ def _animation_explanation(frame, k: int, features: list[str]) -> str:
             f"moverían. El algoritmo se detiene aquí — este es el resultado final de k-means."
         )
     return f"Se alcanzó el máximo de iteraciones ({frame.iteration}) sin convergencia completa."
+
 
 st.set_page_config(page_title="Simulador K-Means · Municipios de Colombia", page_icon="📍", layout="wide")
 
@@ -138,7 +146,10 @@ st.sidebar.caption("El estudio MinTIC 2023 usó k=3, elegido maximizando el Índ
 
 with st.sidebar.expander("Parámetros avanzados"):
     random_state = st.number_input("random_state", min_value=0, value=42, step=1)
-    n_init = st.number_input("n_init (reinicios del algoritmo)", min_value=1, value=10, step=1)
+    n_init_elbow = st.number_input(
+        "n_init para la curva del codo", min_value=1, value=10, step=1,
+        help="Solo afecta el análisis agregado de 'elección de k' (no la animación paso a paso, que usa una sola inicialización).",
+    )
 
 reference_choice = st.sidebar.selectbox(
     "Referencia para matriz de confusión",
@@ -154,22 +165,17 @@ st.sidebar.divider()
 st.sidebar.caption("Desarrollado por David Bello")
 
 # ---------------------------------------------------------------------------
-# Datos
+# Datos y referencia
 # ---------------------------------------------------------------------------
 df, meta = prepare_dataset(missing_strategy, features)
+municipios = df["Municipio"].to_numpy()
 
 if reference_choice == "Categorías oficiales IDF (DNP)":
-    ref_labels = label_idf_dnp(df)
+    ref_labels = pd.Series(label_idf_dnp(df), index=df.index)
 elif reference_choice == "Réplica estudio MinTIC (Avanzado/Intermedio/Básico)":
-    ref_labels = label_mintic_replica(df, features)
+    ref_labels = pd.Series(label_mintic_replica(df, features), index=df.index)
 else:
     ref_labels = None
-
-result = run_kmeans(df, features, k, scale, int(random_state), int(n_init))
-df = df.copy()
-df["cluster"] = result.labels.astype(str)
-if ref_labels is not None:
-    df["referencia"] = pd.Series(ref_labels, index=df.index)
 
 # ---------------------------------------------------------------------------
 # Encabezado
@@ -181,104 +187,23 @@ st.caption(
     f"({meta['n_missing']} con dato faltante, estrategia: {missing_strategy_label.lower()})."
 )
 
-tab_sim, tab_class, tab_comp, tab_docs = st.tabs(
-    ["🎛️ Simulador", "🎓 Aula interactiva", "📊 Matriz de confusión y métricas", "📚 Documentación"]
-)
+tab_sim, tab_docs = st.tabs(["🎓 Simulador interactivo", "📚 Documentación"])
 
 # ---------------------------------------------------------------------------
-# TAB 1 — Simulador
+# TAB 1 — Simulador interactivo (todo integrado y en vivo)
 # ---------------------------------------------------------------------------
 with tab_sim:
-    kpi_cols = st.columns(6)
-    kpi_cols[0].metric("Municipios", meta["n_usado"])
-    kpi_cols[1].metric("k", k)
-    kpi_cols[2].metric("Inercia", f"{result.inertia:,.0f}")
-    kpi_cols[3].metric("Silhouette", f"{result.silhouette:.3f}" if result.silhouette is not None else "—")
-    kpi_cols[4].metric("Davies-Bouldin", f"{result.davies_bouldin:.3f}" if result.davies_bouldin is not None else "—")
-    kpi_cols[5].metric("Índice de Dunn", f"{result.dunn_index:.3f}" if result.dunn_index is not None else "—")
-
-    st.markdown("### Número óptimo de clusters")
-    st.caption("Curva del codo (inercia) e Índice de Dunn para distintos valores de k, igual que en el estudio MinTIC 2023.")
-
-    @st.cache_data(show_spinner="Calculando curva del codo...")
-    def _elbow(missing_strategy, features_tuple, scale, k_min, k_max, random_state, n_init):
-        df_, _ = prepare_dataset(missing_strategy, list(features_tuple))
-        return elbow_curve(df_, list(features_tuple), scale, range(k_min, k_max + 1), random_state, n_init)
-
-    elbow_df = _elbow(missing_strategy, tuple(features), scale, 2, 10, int(random_state), int(n_init))
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        fig = px.line(elbow_df, x="k", y="inertia", markers=True, title="Curva del codo")
-        fig.add_vline(x=k, line_dash="dash", line_color="crimson")
-        st.plotly_chart(fig, use_container_width=True)
-    with col_b:
-        fig = px.line(elbow_df, x="k", y="dunn_index", markers=True, title="Índice de Dunn por k")
-        fig.add_vline(x=k, line_dash="dash", line_color="crimson")
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("### Visualización de los clusters (proyección PCA 2D)")
-    pca_df = pd.DataFrame(result.pca_coords, columns=["PC1", "PC2"][: result.pca_coords.shape[1]])
-    pca_df["cluster"] = df["cluster"].to_numpy()
-    pca_df["Municipio"] = df["Municipio"].to_numpy()
-
-    fig = px.scatter(
-        pca_df,
-        x="PC1",
-        y="PC2",
-        color="cluster",
-        hover_name="Municipio",
-        opacity=0.7,
-        title=f"Municipios proyectados en 2D (varianza explicada: {result.pca_explained_variance.sum() * 100:.1f}%)",
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("### Perfil de los clusters")
-    profile = df.groupby("cluster")[features].mean()
-    profile["n_municipios"] = df.groupby("cluster").size()
-    profile["% del total"] = (profile["n_municipios"] / len(df) * 100).round(1)
-    profile = profile.rename(columns=FEATURE_LABELS)
-    st.dataframe(profile.style.format(precision=1), use_container_width=True)
-
-    size_fig = px.bar(
-        df["cluster"].value_counts().sort_index().reset_index(),
-        x="cluster",
-        y="count",
-        title="Tamaño de cada cluster",
-        labels={"count": "N° municipios", "cluster": "Cluster"},
-    )
-    st.plotly_chart(size_fig, use_container_width=True)
-
-    st.markdown("### Municipios y cluster asignado")
-    show_cols = ["Municipio", "Código DIVIPOLA", "cluster"] + (["referencia"] if ref_labels is not None else []) + features
-    display_df = df[show_cols].rename(columns=FEATURE_LABELS)
-    search = st.text_input("Buscar municipio")
-    if search:
-        display_df = display_df[display_df["Municipio"].str.contains(search, case=False, na=False)]
-    st.dataframe(display_df, use_container_width=True, height=350)
-    st.download_button(
-        "⬇️ Descargar resultados (CSV)",
-        data=display_df.to_csv(index=False).encode("utf-8"),
-        file_name=f"kmeans_municipios_k{k}.csv",
-        mime="text/csv",
-    )
-
-# ---------------------------------------------------------------------------
-# TAB 2 — Aula interactiva (k-means paso a paso)
-# ---------------------------------------------------------------------------
-with tab_class:
-    st.markdown("### 🎓 Cómo piensa k-means, paso a paso")
+    st.markdown("### Cómo piensa k-means, paso a paso")
     st.caption(
-        "Aquí el algoritmo se ejecuta de forma manual (sin usar `KMeans.fit` de una sola vez) guardando "
-        "cada paso intermedio, para poder recorrerlos uno por uno como en una clase en vivo."
+        "El algoritmo corre de forma manual (no `KMeans.fit` de una sola vez), guardando cada paso "
+        "intermedio. Al reproducir o mover la barra, la gráfica, las métricas, el perfil de los clusters "
+        "y la matriz de confusión se recalculan para ese paso exacto — todo integrado, en vivo."
     )
     st.latex(r"V_{C_k} = \sum_{i=1}^{m} (x_i^k - \mu_k)^2 \qquad \text{(inercia: variación total dentro del cluster } C_k\text{)}")
     st.caption(
-        "⚠️ Esta animación usa **una sola** inicialización aleatoria de centroides (a diferencia del "
-        "Simulador, que corre 10 inicializaciones y se queda con la mejor). Por eso puede converger a un "
-        "resultado distinto — y a veces peor — que el de la pestaña Simulador: es precisamente el motivo "
-        "por el que k-means en la práctica se corre varias veces. Cambia el `random_state` en Parámetros "
-        "avanzados para comprobarlo con otra semilla."
+        "⚠️ Esta animación usa **una sola** inicialización aleatoria de centroides (no las mejores de 10 "
+        "reinicios), así que puede converger a un resultado distinto —y a veces peor— cada vez que cambias "
+        "el `random_state`: es justamente el motivo por el que k-means en la práctica se corre varias veces."
     )
 
     @st.cache_data(show_spinner="Ejecutando k-means paso a paso...")
@@ -286,9 +211,8 @@ with tab_class:
         df_, _ = prepare_dataset(missing_strategy, list(features_tuple))
         return kmeans_animation(df_, list(features_tuple), k, scale, random_state, max_iter)
 
-    points_2d, frames = _kmeans_animation(missing_strategy, tuple(features), scale, k, int(random_state))
+    X, points_2d, frames = _kmeans_animation(missing_strategy, tuple(features), scale, k, int(random_state))
     n_frames = len(frames)
-    municipios = df["Municipio"].to_numpy()
 
     config_fingerprint = (missing_strategy, tuple(features), scale, k, int(random_state))
     if st.session_state.get("anim_config") != config_fingerprint:
@@ -312,77 +236,161 @@ with tab_class:
     if new_idx != st.session_state.frame_idx:
         st.session_state.frame_idx = new_idx
 
-    chart_ph = st.empty()
-    text_ph = st.empty()
-    inertia_ph = st.empty()
+    st.divider()
+
+    state_ph = st.empty()
+    chart_col_ph = st.empty()
+    profile_ph = st.empty()
+    confusion_ph = st.empty()
 
     def _render(i):
         frame = frames[i]
-        chart_ph.plotly_chart(_animation_figure(points_2d, frame, municipios), use_container_width=True, key=f"anim_{i}")
-        text_ph.info(_animation_explanation(frame, k, features))
-        steps_so_far = [(j, frames[j].inertia) for j in range(1, i + 1) if frames[j].inertia is not None]
-        if steps_so_far:
-            hist_df = pd.DataFrame(steps_so_far, columns=["paso", "inercia"])
-            fig_hist = px.line(hist_df, x="paso", y="inercia", markers=True, title="Inercia a lo largo de los pasos")
-            fig_hist.update_layout(height=250)
-            inertia_ph.plotly_chart(fig_hist, use_container_width=True, key=f"anim_hist_{i}")
-        else:
-            inertia_ph.empty()
+        metrics = frame_metrics(X, frame.labels)
+
+        # --- Estado del algoritmo + métricas de calidad, para ESTE paso ---
+        with state_ph.container():
+            st.markdown("#### Estado del algoritmo en este paso")
+            c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+            c1.metric("Paso", i)
+            c2.metric("Iteración", frame.iteration)
+            c3.metric("Cambiaron de cluster", frame.n_changed if frame.n_changed is not None else "—")
+            c4.metric("Inercia", f"{frame.inertia:,.0f}" if frame.inertia is not None else "—")
+            c5.metric("Silhouette", f"{metrics['silhouette']:.3f}" if metrics["silhouette"] is not None else "—")
+            c6.metric("Davies-Bouldin", f"{metrics['davies_bouldin']:.3f}" if metrics["davies_bouldin"] is not None else "—")
+            c7.metric("Índice de Dunn", f"{metrics['dunn_index']:.3f}" if metrics["dunn_index"] is not None else "—")
+
+        # --- Gráfica + explicación + curva de inercia ---
+        with chart_col_ph.container():
+            gcol, tcol = st.columns([2, 1])
+            with gcol:
+                st.plotly_chart(_animation_figure(points_2d, frame, municipios), use_container_width=True, key=f"anim_{i}")
+            with tcol:
+                st.info(_animation_explanation(frame, k, features))
+                steps_so_far = [(j, frames[j].inertia) for j in range(1, i + 1) if frames[j].inertia is not None]
+                if steps_so_far:
+                    hist_df = pd.DataFrame(steps_so_far, columns=["paso", "inercia"])
+                    fig_hist = px.line(hist_df, x="paso", y="inercia", markers=True, title="Inercia por paso")
+                    fig_hist.update_layout(height=260, margin=dict(t=40))
+                    st.plotly_chart(fig_hist, use_container_width=True, key=f"anim_hist_{i}")
+
+        # --- Perfil de clusters para este paso ---
+        with profile_ph.container():
+            if frame.labels is None:
+                st.info("Todavía no hay municipios asignados a un cluster en este paso.")
+            else:
+                st.markdown("#### Perfil de los clusters en este paso")
+                df_step = df.copy()
+                df_step["cluster"] = frame.labels.astype(str)
+                profile = df_step.groupby("cluster")[features].mean()
+                profile["n_municipios"] = df_step.groupby("cluster").size()
+                profile["% del total"] = (profile["n_municipios"] / len(df_step) * 100).round(1)
+                profile = profile.rename(columns=FEATURE_LABELS)
+                pcol, scol = st.columns([2, 1])
+                pcol.dataframe(profile.style.format(precision=1), use_container_width=True)
+                size_fig = px.bar(
+                    df_step["cluster"].value_counts().sort_index().reset_index(),
+                    x="cluster", y="count", labels={"count": "N° municipios", "cluster": "Cluster"},
+                    title="Tamaño de cada cluster",
+                )
+                size_fig.update_layout(height=300, margin=dict(t=40))
+                scol.plotly_chart(size_fig, use_container_width=True, key=f"anim_sizes_{i}")
+
+        # --- Matriz de confusión para este paso ---
+        with confusion_ph.container():
+            if frame.labels is None:
+                pass
+            elif ref_labels is None:
+                st.info("Selecciona un esquema de referencia en la barra lateral para ver la matriz de confusión.")
+            else:
+                comp = compare_to_reference(frame.labels, ref_labels)
+                st.markdown(f"#### Matriz de confusión en este paso — vs. **{reference_choice}**")
+                st.caption(
+                    "Cada cluster se empareja con la categoría de referencia más frecuente dentro de él "
+                    "(algoritmo húngaro). Como el clustering aún puede estar cambiando, este emparejamiento "
+                    "también se recalcula en cada paso."
+                )
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Accuracy (tras emparejar)", f"{comp.accuracy * 100:.1f}%")
+                m2.metric("ARI", f"{comp.ari:.3f}", help="Adjusted Rand Index: acuerdo corregido por azar, no depende del emparejamiento.")
+                m3.metric("NMI", f"{comp.nmi:.3f}", help="Normalized Mutual Information, entre 0 y 1.")
+
+                cm = comp.confusion
+                heat = go.Figure(
+                    data=go.Heatmap(
+                        z=cm.values, x=list(cm.columns), y=list(cm.index),
+                        text=cm.values, texttemplate="%{text}", colorscale="Blues",
+                    )
+                )
+                heat.update_layout(
+                    xaxis_title="Predicho (cluster emparejado)", yaxis_title="Real (referencia)",
+                    height=380, margin=dict(t=30),
+                )
+                hcol, tcol2 = st.columns([1, 1])
+                hcol.plotly_chart(heat, use_container_width=True, key=f"anim_cm_{i}")
+                tcol2.dataframe(comp.per_class.style.format(precision=3), use_container_width=True, hide_index=True)
 
     if play:
         for i in range(st.session_state.frame_idx, n_frames):
             st.session_state.frame_idx = i
             _render(i)
-            time.sleep(0.6)
+            time.sleep(0.5)
         st.rerun()
     else:
         _render(st.session_state.frame_idx)
 
-# ---------------------------------------------------------------------------
-# TAB 3 — Matriz de confusión
-# ---------------------------------------------------------------------------
-with tab_comp:
-    if ref_labels is None:
-        st.info("Selecciona un esquema de referencia en la barra lateral para ver la matriz de confusión.")
+    st.divider()
+
+    # --- Tabla completa de municipios (snapshot del paso actual) ---
+    current_frame = frames[st.session_state.frame_idx]
+    st.markdown("#### Municipios y cluster asignado (paso actual)")
+    if current_frame.labels is None:
+        st.info("Todavía no hay asignación de clusters en este paso.")
     else:
-        comp = compare_to_reference(result.labels, pd.Series(ref_labels, index=df.index))
+        display_df = df.copy()
+        display_df["cluster"] = current_frame.labels.astype(str)
+        if ref_labels is not None:
+            display_df["referencia"] = ref_labels
+        show_cols = ["Municipio", "Código DIVIPOLA", "cluster"] + (["referencia"] if ref_labels is not None else []) + features
+        display_df = display_df[show_cols].rename(columns=FEATURE_LABELS)
+        search = st.text_input("Buscar municipio")
+        if search:
+            display_df = display_df[display_df["Municipio"].str.contains(search, case=False, na=False)]
+        st.dataframe(display_df, use_container_width=True, height=350)
+        st.download_button(
+            "⬇️ Descargar resultados de este paso (CSV)",
+            data=display_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"kmeans_municipios_k{k}_paso{st.session_state.frame_idx}.csv",
+            mime="text/csv",
+        )
 
-        st.markdown(f"#### Comparación: clusters de k-means vs. **{reference_choice}**")
+    st.divider()
+
+    # --- Análisis agregado: elección de k (no depende del paso actual) ---
+    with st.expander("📐 ¿Cómo elegir el número de clusters (k)? — curva del codo e Índice de Dunn"):
         st.caption(
-            "Cada cluster (sin nombre por naturaleza) se empareja con la categoría de referencia más frecuente "
-            "dentro de él (algoritmo húngaro, maximiza el acuerdo global)."
+            "Este análisis es independiente del paso actual: corre k-means completo (con reinicios "
+            "múltiples) para varios valores de k, igual que en el estudio MinTIC 2023."
         )
-        mapping_df = pd.DataFrame(
-            [{"cluster": c, "categoría asignada": v} for c, v in sorted(comp.mapping.items())]
-        )
-        st.dataframe(mapping_df, use_container_width=True, hide_index=True)
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Accuracy (tras emparejar)", f"{comp.accuracy * 100:.1f}%", help="Coincidencia entre cluster emparejado y categoría real.")
-        m2.metric("ARI (Adjusted Rand Index)", f"{comp.ari:.3f}", help="Acuerdo entre agrupaciones corregido por azar. 1 = idéntico, 0 = azar. No depende del emparejamiento de nombres.")
-        m3.metric("NMI (Normalized Mutual Info)", f"{comp.nmi:.3f}", help="Información compartida entre las dos particiones, normalizada entre 0 y 1.")
+        @st.cache_data(show_spinner="Calculando curva del codo...")
+        def _elbow(missing_strategy, features_tuple, scale, k_min, k_max, random_state, n_init):
+            df_, _ = prepare_dataset(missing_strategy, list(features_tuple))
+            return elbow_curve(df_, list(features_tuple), scale, range(k_min, k_max + 1), random_state, n_init)
 
-        st.markdown("##### Matriz de confusión")
-        cm = comp.confusion
-        heat = go.Figure(
-            data=go.Heatmap(
-                z=cm.values,
-                x=list(cm.columns),
-                y=list(cm.index),
-                text=cm.values,
-                texttemplate="%{text}",
-                colorscale="Blues",
-            )
-        )
-        heat.update_layout(xaxis_title="Predicho (cluster emparejado)", yaxis_title="Real (referencia)")
-        st.plotly_chart(heat, use_container_width=True)
-        st.dataframe(cm, use_container_width=True)
+        elbow_df = _elbow(missing_strategy, tuple(features), scale, 2, 10, int(random_state), int(n_init_elbow))
 
-        st.markdown("##### Precisión, recall y F1 por categoría")
-        st.dataframe(comp.per_class.style.format(precision=3), use_container_width=True, hide_index=True)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            fig = px.line(elbow_df, x="k", y="inertia", markers=True, title="Curva del codo")
+            fig.add_vline(x=k, line_dash="dash", line_color="crimson")
+            st.plotly_chart(fig, use_container_width=True)
+        with col_b:
+            fig = px.line(elbow_df, x="k", y="dunn_index", markers=True, title="Índice de Dunn por k")
+            fig.add_vline(x=k, line_dash="dash", line_color="crimson")
+            st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# TAB 4 — Documentación
+# TAB 2 — Documentación
 # ---------------------------------------------------------------------------
 with tab_docs:
     st.markdown(
@@ -408,14 +416,21 @@ El estudio original de MinTIC usa una sexta variable (porcentaje de hogares
 con acceso a internet) que no está disponible en este dataset, por lo que el
 simulador agrupa con las cinco variables anteriores.
 
-### La pestaña "Aula interactiva"
-Mientras que la pestaña Simulador muestra el resultado final del clustering,
-la pestaña **🎓 Aula interactiva** ejecuta el algoritmo paso a paso y deja
-recorrer cada iteración con controles de reproducir/pausar/avanzar o
-arrastrando una barra: inicialización de centroides, asignación de cada
-municipio al centroide más cercano, recálculo de centroides, y así hasta la
-convergencia — con una explicación de qué está pasando técnicamente en cada
-paso, y una curva en vivo de cómo baja la inercia.
+### Todo integrado en un solo simulador
+La pestaña **🎓 Simulador interactivo** ejecuta k-means paso a paso
+(inicialización de centroides, asignación de cada municipio al centroide más
+cercano, recálculo de centroides, y así hasta la convergencia) y, para el
+paso en el que te encuentres —ya sea recorriéndolo con los controles de
+reproducir/pausar/avanzar o arrastrando la barra—, recalcula en vivo:
+
+- La gráfica de clusters (proyección PCA 2D) y la explicación técnica de qué está pasando.
+- Las métricas de calidad (inercia, silhouette, Davies-Bouldin, Índice de Dunn).
+- El perfil y tamaño de cada cluster.
+- La matriz de confusión y las métricas de comparación (accuracy, ARI, NMI) contra el esquema de referencia elegido.
+
+Así se puede ver, en una sola vista, cómo van cambiando **a la vez** la
+asignación de cada municipio, la calidad del agrupamiento y su parecido con
+una clasificación de referencia, a medida que el algoritmo converge.
 
 ### ¿Cómo funciona k-means?
 1. Se elige un número de clusters **k**.
@@ -430,7 +445,8 @@ Como las variables tienen escalas muy distintas (habitantes vs. puntajes de
 opción disponible en la barra lateral.
 
 ### ¿Cómo elegir el número de clusters (k)?
-El simulador muestra dos criterios, igual que el estudio original:
+Dentro del simulador, el desplegable **"¿Cómo elegir el número de clusters?"**
+muestra dos criterios, igual que el estudio original:
 - **Curva del codo**: la inercia (suma de distancias al cuadrado dentro de
   cada cluster) siempre baja al aumentar k; se busca el punto donde deja de
   bajar mucho ("codo").
@@ -439,12 +455,19 @@ El simulador muestra dos criterios, igual que el estudio original:
   clusters más compactos y mejor separados. El estudio MinTIC 2023 usó este
   criterio y encontró que k=3 lo maximiza para los municipios de Colombia.
 
+Este análisis usa k-means con múltiples reinicios (`n_init`) para cada valor
+de k, a diferencia de la animación paso a paso, que deliberadamente usa una
+sola inicialización para poder mostrar el proceso con claridad.
+
 ### Métricas internas de calidad del clustering
 - **Inercia**: suma de distancias al cuadrado de cada punto a su centroide (menor es más compacto, pero siempre baja al aumentar k).
 - **Silhouette**: qué tan similar es cada punto a su propio cluster vs. a los demás (rango -1 a 1, mayor es mejor).
-- **Calinski-Harabasz**: razón entre dispersión inter e intra-cluster (mayor es mejor).
 - **Davies-Bouldin**: similitud promedio entre cada cluster y el más parecido a él (menor es mejor).
 - **Índice de Dunn**: ver arriba.
+
+Estas métricas se recalculan para el paso actual de la animación, así que
+pueden no estar definidas (mostradas como "—") en pasos muy tempranos donde
+todavía no hay al menos dos clusters con municipios asignados.
 
 ### Matriz de confusión y métricas de comparación
 K-means es un algoritmo **no supervisado**: no conoce ninguna "categoría
