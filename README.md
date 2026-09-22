@@ -30,6 +30,9 @@ David Bello
 (desplegada en Streamlit Community Cloud, se actualiza sola con cada `git push` a `main`)
 
 ## Documentación del proyecto
+- 📄 [Informe_Simulador_KMeans_David_Bello.pdf](Informe_Simulador_KMeans_David_Bello.pdf):
+  documento único con todo organizado — resumen, enlaces, capturas de la app,
+  arquitectura, metodología/resultados y el historial de prompts.
 - [ARQUITECTURA.md](ARQUITECTURA.md): arquitectura de la app, dependencias,
   despliegue y el historial de prompts usados para construirla con IA.
 - [INFORME.md](INFORME.md): metodología, resultados, matriz de confusión y
